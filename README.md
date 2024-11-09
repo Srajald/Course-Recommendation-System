@@ -1,4 +1,4 @@
-# Course_Recomender
+# Course_Recommendation-System
 This is recommending the best course based on user requirements
 
 Smart Course Search Application  ---   
@@ -69,9 +69,7 @@ If you don't have the embeddings, generate them using SentenceTransformer('all-m
 5. Run the Application:
 
 bash
-Copy code
 streamlit run app.py
-Usage
 
 6. Launch the App: Once you run the command, a new browser window/tab will open with the application.
 
