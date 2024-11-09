@@ -1,88 +1,65 @@
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import pandas as pd
 import numpy as np
-
-# Load your preprocessed data
-data = pd.read_csv("preprocessed_analytics_vidhya_courses.csv")
-
-# Initialize the SBERT model
-model = SentenceTransformer('all-MiniLM-L6-v2')
-
-# Concatenate the relevant fields for embedding generation
-data['text_for_embedding'] = (
-    data['Title'].fillna('') + " " +
-    data['Title_Tokens'].fillna('')
-)
-
-# Generate embeddings for each course
-data['embedding'] = data['text_for_embedding'].apply(lambda x: model.encode(x))
-
-# Save the embeddings as a numpy array for easier similarity calculations
-data['embedding'] = data['embedding'].apply(lambda x: np.array(x))
-print("Embeddings generated and stored.")
-data.to_pickle("courses_with_embeddings.pkl")  # Save as a pickle file
-
 from sklearn.metrics.pairwise import cosine_similarity
 
+data = pd.read_csv("preprocessed_analytics_vidhya_courses.csv")
+
+embedding_model = SentenceTransformer('all-mpnet-base-v2')  # Use a more accurate embedding model
+rerank_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')  # Cross-encoder for reranking
+
+# Prepare text for embedding generation by concatenating fields
+data['text_for_embedding'] = (
+    data['Title'].fillna('') + " " +
+    data['Description'].fillna('') + " " +
+    data['Curriculum'].fillna('')
+)
+
+data['embedding'] = data['text_for_embedding'].apply(lambda x: embedding_model.encode(x))
+
+data['embedding'] = data['embedding'].apply(lambda x: np.array(x))
+data.to_pickle("courses_with_embedd.pkl")
+
+data = pd.read_pickle("courses_with_embedd.pkl")
+
 def preprocess_query(query):
-    # Clean the query (similar to how we cleaned the data)
-    # This could include converting to lowercase, removing punctuation, etc.
-    query = query.lower().strip()
-    return query
+    """Preprocess the search query."""
+    return query.lower().strip()
 
-def search_courses(query, data, model, top_n=5, threshold=0.5):
-    # Preprocess and embed the query
+def search_courses(query, data, embedding_model, rerank_model, top_n=5, threshold=0.5, tags_filter=None):
+    """Search courses using a multi-model pipeline with reranking."""
+    
     query = preprocess_query(query)
-    query_embedding = model.encode(query)
-    
-    # Calculate cosine similarity between the query and each course embedding
+    query_embedding = embedding_model.encode(query)
     similarities = cosine_similarity([query_embedding], list(data['embedding']))[0]
-    
-    # Add similarities to the DataFrame
     data['similarity_score'] = similarities
+
+    if tags_filter:
+        data = data[data[['Title', 'Description', 'Curriculum']].apply(
+            lambda x: x.str.contains(tags_filter, case=False, na=False).any(), axis=1)]
     
-    # Filter and sort results based on similarity score
-    results = data[data['similarity_score'] >= threshold]
-    results = results.sort_values(by='similarity_score', ascending=False)
     
-    # Return top N results with the selected columns (excluding Short_Description)
-    return results.head(top_n)[['Title', 'similarity_score', 'Link']]
+    top_candidates = data[data['similarity_score'] >= threshold].nlargest(top_n * 2, 'similarity_score')
 
 
-# Load data with embeddings if not already loaded
-data = pd.read_pickle("courses_with_embeddings.pkl")
+    pairs = [[query, candidate] for candidate in top_candidates['Title']]
+    rerank_scores = rerank_model.predict(pairs)
+    top_candidates['rerank_score'] = rerank_scores
 
-# Sample search query
+
+    final_results = top_candidates.nlargest(top_n, 'rerank_score')
+    return final_results[['Title', 'similarity_score', 'rerank_score', 'Link']]
+
 query = "Introduction to Generative AI"
-top_results = search_courses(query, data, model, top_n=5, threshold=0.5)
+top_results = search_courses(query, data, embedding_model, rerank_model, top_n=5, threshold=0.5)
 
-# Display results
 print("Top Search Results:")
 print(top_results)
 
-def search_courses_with_filters(query, data, model, tags_filter=None, top_n=5, threshold=0.5):
-    # Process and embed the query
-    query = preprocess_query(query)
-    query_embedding = model.encode(query)
-    
-    # Calculate similarity
-    similarities = cosine_similarity([query_embedding], list(data['embedding']))[0]
-    data['similarity_score'] = similarities
-    
-    # Apply tag filter if provided
-    if tags_filter:
-        data = data[data['Title_Tokens'].str.contains(tags_filter, case=False, na=False)]
-    
-    # Filter and sort based on similarity
-    results = data[data['similarity_score'] >= threshold]
-    results = results.sort_values(by='similarity_score', ascending=False)
-    
-    return results.head(top_n)[['Title', 'similarity_score', 'Link']]
 
-# Filtered search with a tag
-query = "Understanding large language models"
 tag_filter = "Generative AI"
-filtered_results = search_courses_with_filters(query, data, model, tags_filter=tag_filter, top_n=5)
+filtered_results = search_courses(query, data, embedding_model, rerank_model, top_n=5, threshold=0.5, tags_filter=tag_filter)
 
 print("Top Filtered Search Results:")
 print(filtered_results)
+
